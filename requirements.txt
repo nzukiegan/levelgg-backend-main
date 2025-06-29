@@ -1,0 +1,9 @@
+Django==5.2.3
+djangorestframework==3.14.0
+django-allauth>=0.65.9
+dj-database-url>=3.0.0
+python-dotenv>=1.1.0
+djangorestframework-simplejwt>=5.5.0
+django-cors-headers>=4.2.0
+requests>=2.32.3
+faker
