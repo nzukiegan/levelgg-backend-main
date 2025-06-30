@@ -7,3 +7,4 @@ djangorestframework-simplejwt>=5.5.0
 django-cors-headers>=4.2.0
 requests>=2.32.3
 faker
+psycopg2
