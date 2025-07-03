@@ -4,12 +4,25 @@ import uuid
 import json
 
 class Player(AbstractUser):
+    TIER_CHOICES = [
+        ('BRONZE', 'Bronze'),
+        ('SILVER', 'Silver'),
+        ('GOLD', 'Gold'),
+        ('PLATINUM', 'Platinum'),
+        ('DIAMOND', 'Diamond'),
+    ]
     is_team_lead = models.BooleanField(default=False)
+    is_team_captain = models.BooleanField(default=False)
     is_admin = models.BooleanField(default=False)
     email = models.EmailField(unique=True)
     is_online = models.BooleanField(default=False)
     last_activity = models.DateTimeField(auto_now=True)
     last_login_ip = models.GenericIPAddressField(null=True, blank=True)
+    tier = models.CharField(max_length=20, choices=TIER_CHOICES, default='BRONZE')
+
+    skill_rating = models.IntegerField(default=1000)
+    preferred_roles = models.JSONField(default=list)
+    discord_id = models.CharField(max_length=100, blank=True, null=True)
 
     class Meta:
         db_table = 'tournaments_player'
@@ -51,16 +64,28 @@ class Player(AbstractUser):
 class Team(models.Model):
     name = models.CharField(max_length=255)
     created_at = models.DateTimeField(auto_now_add=True)
-    lead_player = models.ForeignKey(Player, on_delete=models.CASCADE, related_name='led_teams')
+    lead_player = models.OneToOneField(Player, on_delete=models.CASCADE, related_name='led_team')
     join_code = models.CharField(max_length=10, unique=True, default=uuid.uuid4().hex[:10].upper())
     is_active = models.BooleanField(default=True)
+    tier = models.CharField(max_length=20, choices=Player.TIER_CHOICES, default='BRONZE')
     
+    def save(self, *args, **kwargs):
+        if not self.pk and not self.tier:
+            self.tier = self.lead_player.tier
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return self.name
 
 class TeamMember(models.Model):
+    ROLE_CHOICES = [
+        ('MEMBER', 'Member'),
+        ('CO_LEAD', 'Co-Lead'),
+        ('CAPTAIN', 'Captain'),
+    ]
     team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name='members')
     player = models.ForeignKey(Player, on_delete=models.CASCADE, related_name='teams')
+    role = models.CharField(max_length=10, choices=ROLE_CHOICES, default='MEMBER')
     joined_at = models.DateTimeField(auto_now_add=True)
     
     class Meta:
@@ -70,9 +95,17 @@ class TeamMember(models.Model):
         return f"{self.player.email} in {self.team.name}"
 
 class Tournament(models.Model):
+    BRACKET_TYPES = [
+        ('SINGLE_ELIM', 'Single Elimination'),
+        ('DOUBLE_ELIM', 'Double Elimination'),
+        ('SWISS', 'Swiss'),
+        ('ROUND_ROBIN', 'Round Robin')
+    ]
+
     MODE_CHOICES = [
-        ('SOLO', 'Solo'),
-        ('TEAM', 'Team'),
+        ('16v16', '16v16'),
+        ('32v32', '32v32'),
+        ('64v64', '64v64'),
     ]
     
     REGION_CHOICES = [
@@ -84,10 +117,11 @@ class Tournament(models.Model):
     ]
     
     LEVEL_CHOICES = [
-        ('BEGINNER', 'Beginner'),
-        ('INTERMEDIATE', 'Intermediate'),
-        ('ADVANCED', 'Advanced'),
-        ('PRO', 'Professional'),
+        ('BRONZE', 'Bronze'),
+        ('SILVER', 'Silver'),
+        ('GOLD', 'Gold'),
+        ('PLATINUM', 'Platinum'),
+        ('DIAMOND', 'Diamond')
     ]
     
     PLATFORM_CHOICES = [
@@ -122,7 +156,46 @@ class Tournament(models.Model):
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     bracket_structure = models.JSONField(default=dict)
+    bracket_type = models.CharField(max_length=20, choices=BRACKET_TYPES, default='SINGLE_ELIM')
+    is_started = models.BooleanField(default=False)
+    is_completed = models.BooleanField(default=False)
+    current_round = models.IntegerField(default=0)
+
+    def generate_bracket(self):
+        if self.bracket_type == 'SWISS':
+            return self._generate_swiss_bracket()
+        elif self.bracket_type == 'SINGLE_ELIM':
+            return self._generate_single_elim_bracket()
+
+    def _generate_swiss_bracket(self):
+        from .services import SwissPairing
+        participants = list(self.participants.all().select_related('team'))
+        return SwissPairing(participants).generate_round(self.current_round)
+
+    def _generate_single_elim_bracket(self):
+        from .services import SingleEliminationBracket
+        participants = list(self.participants.all().select_related('team'))
+        return SingleEliminationBracket(participants).generate_bracket()
+
+    def get_squad_limits(self):
+        limits = {
+            '16v16': (2, 4),
+            '32v32': (6, 8),
+            '64v64': (8, 12),
+        }
+        return limits.get(self.mode, (0, 0))
     
+    def can_create_more_squads(self, participant):
+        min_squads, max_squads = self.get_squad_limits()
+        if max_squads == 0:
+            return False
+        
+        existing_squads = Squad.objects.filter(
+            participant=participant
+        ).count()
+        
+        return existing_squads < max_squads
+
     def __str__(self):
         return self.title
 
@@ -197,12 +270,6 @@ class TeamColor(models.TextChoices):
     RED = 'RED', 'Red'
     BLUE = 'BLUE', 'Blue'
 
-class SquadType(models.TextChoices):
-    INFANTRY = 'INFANTRY', 'Infantry'
-    ARMOR = 'ARMOR', 'Armor'
-    HELI = 'HELI', 'Heli'
-    JET = 'JET', 'Jet'
-
 class PlayerRole(models.TextChoices):
     CAPTAIN = 'CAPTAIN', 'Captain'
     SQUAD_LEADER = 'SQUAD_LEADER', 'Squad Leader'
@@ -221,14 +288,20 @@ class TournamentTeam(models.Model):
 
 
 class SquadType(models.TextChoices):
-    INFANTRY = 'INFANTRY', 'Infantry'
-    ARMOR = 'ARMOR', 'Armor'
-    HELI = 'HELI', 'Heli'
-    JET = 'JET', 'Jet'
+    ALPHA = 'ALPHA', 'Alpha'
+    BRAVO = 'BRAVO', 'Bravo'
+    CHARLIE = 'CHARLIE', 'Charlie'
+    DELTA = 'DELTA', 'Delta'
+    ECHO = 'ECHO', 'Echo'
+    FOXTROT = 'FOXTROT', 'Foxtrot'
+    GOLF = 'GOLF', 'Golf'
+    HOTEL = 'HOTEL', 'Hotel'
+    INDIA = 'INDIA', 'India'
+    JULIET = 'JULIET', 'Juliet'
 
 class Squad(models.Model):
-    tournament_team = models.ForeignKey(
-        'TournamentTeam',
+    participant = models.ForeignKey(
+        'TournamentParticipant',
         on_delete=models.CASCADE,
         related_name='squads'
     )
@@ -238,12 +311,12 @@ class Squad(models.Model):
     )
 
     class Meta:
-        unique_together = ('tournament_team', 'squad_type')
+        unique_together = ('participant', 'squad_type')
         verbose_name = 'Squad'
         verbose_name_plural = 'Squads'
 
     def __str__(self):
-        return f"{self.tournament_team} - {self.squad_type} Squad"
+        return f"{self.participant.team.name} - {self.squad_type} Squad in {self.participant.tournament.title}"
 
 class SquadMember(models.Model):
     ROLE_CHOICES = [
@@ -252,10 +325,17 @@ class SquadMember(models.Model):
         ('NONE', 'No Role'),
     ]
 
+    ACTION_ROLE_CHOICES = [
+        ('INFANTRY', 'Infantry'),
+        ('ARMOR', 'Armor'),
+        ('HELI', 'Heli'),
+        ('JET', 'Jet'),
+    ]
+
     player = models.ForeignKey(Player, on_delete=models.CASCADE, related_name='squad_memberships')
     squad = models.ForeignKey(Squad, on_delete=models.CASCADE, related_name='members')
     role = models.CharField(max_length=10, choices=ROLE_CHOICES, default='NONE')
-
+    action_role = models.CharField(max_length=10, choices=ACTION_ROLE_CHOICES, default='INFANTRY')
     rank = models.CharField(max_length=100)
     country = models.CharField(max_length=100)
     points = models.IntegerField(default=0)

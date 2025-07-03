@@ -11,7 +11,7 @@ SECRET_KEY = 'django-insecure-da)pj4k5!ih3n8g52exap281$^l+1w6u42ysvxi0bu5pul_nuv
 
 DEBUG = True
 
-ALLOWED_HOSTS = [os.environ.get('BACKEND_URL'), os.environ.get('CLIENT_URL')]
+ALLOWED_HOSTS = [os.environ.get('BACKEND_URL'), os.environ.get('CLIENT_URL'), 'localhost', '127.0.0.1',]
 
 AUTH_USER_MODEL = 'tournaments.Player'
 
@@ -144,17 +144,14 @@ CORS_ALLOWED_ORIGINS = [
 CORS_ALLOW_CREDENTIALS = True
 
 REST_FRAMEWORK = {
-    'DEFAULT_PERMISSION_CLASSES': [
-        'rest_framework.permissions.AllowAny',
-    ],
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ],
 }
 
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=5),
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
+    'ACCESS_TOKEN_LIFETIME': timedelta(days=7),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=30),
     'ROTATE_REFRESH_TOKENS': False,
     'BLACKLIST_AFTER_ROTATION': False,
     'AUTH_HEADER_TYPES': ('Bearer',),

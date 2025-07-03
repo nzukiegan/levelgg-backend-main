@@ -6,24 +6,31 @@ from django.contrib.auth.password_validation import validate_password
 class PlayerSerializer(serializers.ModelSerializer):
     class Meta:
         model = Player
-        fields = ['id', 'email', 'username', 'is_team_lead', 'is_admin']
-        extra_kwargs = {'password': {'write_only': True}}
-    
+        fields = [
+            'id', 'email', 'username', 'is_team_lead',
+            'tier', 'skill_rating', 'is_online',
+            'discord_id', 'is_admin'
+        ]
+        extra_kwargs = {
+            'password': {'write_only': True}
+        }
+
     def create(self, validated_data):
         validated_data['password'] = make_password(validated_data.get('password'))
         return super().create(validated_data)
 
 class TeamSerializer(serializers.ModelSerializer):
     lead_player = PlayerSerializer(read_only=True)
-    lead_player_id = serializers.PrimaryKeyRelatedField(
-        queryset=Player.objects.filter(is_team_lead=True), 
-        source='lead_player', 
-        write_only=True
-    )
-    
+    join_code = serializers.CharField(read_only=True)
+
     class Meta:
         model = Team
-        fields = ['id', 'name', 'created_at', 'lead_player', 'lead_player_id', 'join_code', 'is_active']
+        fields = [
+            'id', 'name', 'created_at',
+            'lead_player', 'join_code',
+            'is_active', 'tier'
+        ]
+        read_only_fields = ['created_at', 'lead_player', 'join_code']
 
 class TeamMemberSerializer(serializers.ModelSerializer):
     team = TeamSerializer(read_only=True)
@@ -33,34 +40,27 @@ class TeamMemberSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = TeamMember
-        fields = ['id', 'team', 'team_id', 'player', 'player_id', 'joined_at']
+        fields = ['id', 'team', 'team_id', 'player', 'role', 'player_id', 'joined_at']
 
 class TournamentSerializer(serializers.ModelSerializer):
+    registered_players = serializers.IntegerField(source='participants.count', read_only=True)
+
     class Meta:
         model = Tournament
         fields = '__all__'
 
 class TournamentParticipantSerializer(serializers.ModelSerializer):
-    color = serializers.SerializerMethodField()
+    tournament = TournamentSerializer()
+    team = TeamSerializer()
     squads = serializers.SerializerMethodField()
 
     class Meta:
         model = TournamentParticipant
-        fields = ['team', 'color', 'squads']
-
-    def get_color(self, obj):
-        try:
-            tt = TournamentTeam.objects.get(team=obj.team, tournament=obj.tournament)
-            return tt.color
-        except TournamentTeam.DoesNotExist:
-            return None
+        fields = ['team', 'id', 'tournament', 'registered_at', 'squads']
 
     def get_squads(self, obj):
-        try:
-            tt = TournamentTeam.objects.get(team=obj.team, tournament=obj.tournament)
-            return SquadSerializer(tt.squads.all(), many=True).data
-        except TournamentTeam.DoesNotExist:
-            return []
+        return SquadSerializer(obj.squads.all().prefetch_related('members__player'), many=True).data
+
 
 class TournamentMatchSerializer(serializers.ModelSerializer):
     team1 = TeamSerializer(read_only=True)
@@ -171,32 +171,53 @@ class NewsSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 class SquadMemberSerializer(serializers.ModelSerializer):
-    player_name = serializers.CharField(source='player.username')
-    rank = serializers.CharField()
-    country = serializers.CharField()
-    points = serializers.IntegerField()
-    kd = serializers.FloatField(source='kill_death_ratio')
-    winrate = serializers.FloatField(source='win_rate')
+    player_id = serializers.IntegerField(source='player.id', read_only=True)
+    player_name = serializers.CharField(source='player.username', read_only=True)
+    player_email = serializers.CharField(source='player.email', read_only=True)
+    is_online = serializers.BooleanField(source='player.is_online', read_only=True)
+    
+    rank = serializers.CharField(read_only=True)
+    country = serializers.CharField(read_only=True)
+    points = serializers.IntegerField(read_only=True)
+    kd = serializers.FloatField(source='kill_death_ratio', read_only=True)
+    winrate = serializers.FloatField(source='win_rate', read_only=True)
+    role = serializers.CharField(read_only=True)
+    action_role = serializers.CharField(read_only=True)
+
     icon = serializers.SerializerMethodField()
     country_icon = serializers.SerializerMethodField()
 
     class Meta:
         model = SquadMember
-        fields = ['player_name', 'icon', 'rank', 'country', 'country_icon', 'points', 'kd', 'winrate']
+        fields = [
+            'id',
+            'player_id', 'player_name', 'player_email', 'is_online',
+            'icon', 'rank', 'country', 'country_icon',
+            'points', 'kd', 'winrate', 'role', 'action_role'
+        ]
 
     def get_icon(self, obj):
-        return "/player.png"
+        return f"/players/{obj.player.username.lower()}.png" if obj.player.username else "/players/default.png"
 
     def get_country_icon(self, obj):
-        return f"/flags/{obj.country.lower()}.png"
+        if obj.country:
+            country_code = obj.country.lower()
+            return f"/flags/{country_code}.png"
+        return None
 
 
 class SquadSerializer(serializers.ModelSerializer):
-    members = SquadMemberSerializer(many=True)
+    members = SquadMemberSerializer(many=True, read_only=True)
+    icon = serializers.SerializerMethodField()
+    tournament_name = serializers.SerializerMethodField()
+    team_name = serializers.SerializerMethodField()
 
     class Meta:
         model = Squad
-        fields = ['squad_type', 'members']
+        fields = [
+            'id', 'squad_type', 'members', 'participant',
+            'tournament_name', 'team_name', 'icon'
+        ]
     
     def get_icon(self, obj):
         icon_map = {
@@ -207,50 +228,69 @@ class SquadSerializer(serializers.ModelSerializer):
         }
         return icon_map.get(obj.squad_type, '/icons/default.png')
 
+    def get_tournament_name(self, obj):
+        return obj.participant.tournament.title if obj.participant and obj.participant.tournament else None
+
+    def get_team_name(self, obj):
+        return obj.participant.team.name if obj.participant and obj.participant.team else None
+
 
 class TournamentTeamSerializer(serializers.ModelSerializer):
-    squads = SquadSerializer(many=True)
-    color = serializers.SerializerMethodField()
+    squads = SquadSerializer(many=True, read_only=True)
+    tournament_id = serializers.IntegerField(source='tournament.id')
+    tournament_title = serializers.CharField(source='tournament.title')
+    team_id = serializers.IntegerField(source='team.id')
+    team_name = serializers.CharField(source='team.name')
+    team_tier = serializers.CharField(source='team.tier')
 
     class Meta:
         model = TournamentTeam
-        fields = ['color', 'squads']
+        fields = [
+            'id', 'color', 'squads', 'tournament_id', 'tournament_title',
+            'team_id', 'team_name', 'team_tier'
+        ]
 
-    def get_color(self, obj):
-        try:
-            tournament_team = TournamentTeam.objects.get(team=obj.team, tournament=obj.tournament)
-            return tournament_team.color
-        except TournamentTeam.DoesNotExist:
-            return None
+    def to_representation(self, instance):
+        representation = super().to_representation(instance)
+        representation['squads'] = sorted(
+            representation['squads'],
+            key=lambda x: ['INFANTRY', 'ARMOR', 'HELI', 'JET'].index(x['squad_type'])
+        )
+        return representation
 
-    def get_squads(self, obj):
-        try:
-            tournament_team = TournamentTeam.objects.get(team=obj.team, tournament=obj.tournament)
-            return SquadSerializer(tournament_team.squads.all(), many=True).data
-        except TournamentTeam.DoesNotExist:
-            return []
+
+class TeamSquadManagementSerializer(serializers.ModelSerializer):
+    tournament_teams = serializers.SerializerMethodField()
+    members = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Team
+        fields = ['id', 'name', 'tier', 'tournament_teams', 'members']
+
+    def get_tournament_teams(self, obj):
+        teams = TournamentTeam.objects.filter(team=obj).select_related(
+            'tournament', 'team'
+        ).prefetch_related('squads__members__player')
+        return TournamentTeamSerializer(teams, many=True).data
+
+    def get_members(self, obj):
+        from .team_serializers import TeamMemberSerializer
+        return TeamMemberSerializer(obj.members.all(), many=True).data
 
 class TournamentParticipantTeamSerializer(serializers.ModelSerializer):
-    color = serializers.SerializerMethodField()
+    team_name = serializers.SerializerMethodField()
     squads = serializers.SerializerMethodField()
 
     class Meta:
         model = TournamentParticipant
-        fields = ['team', 'color', 'squads']
+        fields = ['team_name', 'squads']
 
-    def get_color(self, obj):
-        try:
-            tt = TournamentTeam.objects.get(team=obj.team, tournament=obj.tournament)
-            return tt.color
-        except TournamentTeam.DoesNotExist:
-            return None
+    def get_team_name(self, obj):
+        return obj.team.name
 
     def get_squads(self, obj):
-        try:
-            tt = TournamentTeam.objects.get(team=obj.team, tournament=obj.tournament)
-            return SquadSerializer(tt.squads.all(), many=True).data
-        except TournamentTeam.DoesNotExist:
-            return []
+        return SquadSerializer(obj.squads.all(), many=True).data
+
 
 class TournamentDetailSerializer(serializers.ModelSerializer):
     teams = TournamentParticipantTeamSerializer(source='participants', many=True)
@@ -309,3 +349,36 @@ class MatchSerializer(serializers.ModelSerializer):
 
     def get_formatted_date(self, obj):
         return obj.scheduled_time.strftime("%b %d, %Y") if obj.scheduled_time else "TBD"
+
+class TournamentTeamSerializer(serializers.ModelSerializer):
+    team_name = serializers.CharField(source='team.name', read_only=True)
+    tournament_name = serializers.CharField(source='tournament.title', read_only=True)
+
+    class Meta:
+        model = TournamentTeam
+        fields = ['id', 'team', 'tournament', 'color', 'team_name', 'tournament_name']
+
+class RegisteredTournamentSerializer(serializers.ModelSerializer):
+    tournament = TournamentSerializer()
+    team = serializers.SerializerMethodField()
+
+    class Meta:
+        model = TournamentParticipant
+        fields = ['id', 'tournament', 'team', 'registered_at']
+
+    def get_team(self, obj):
+        return {
+            'id': obj.team.id,
+            'name': obj.team.name
+        }
+
+class AllTeamDetailsSerializer(serializers.ModelSerializer):
+    squad_type = serializers.CharField()
+    has_squad_lead = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Squad
+        fields = ['id', 'squad_type', 'has_squad_lead']
+
+    def get_has_squad_lead(self, obj):
+        return SquadMember.objects.filter(squad=obj, role='LEADER').exists()

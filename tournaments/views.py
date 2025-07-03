@@ -5,7 +5,7 @@ from rest_framework.permissions import IsAuthenticated, IsAdminUser, AllowAny
 from rest_framework.decorators import action, api_view
 from django.contrib.auth import get_user_model, authenticate
 from django.shortcuts import get_object_or_404
-from django.core.exceptions import ValidationError
+from django.core.exceptions import ValidationError, PermissionDenied
 from django.utils import timezone
 from django.utils.timezone import now
 from django.http import JsonResponse
@@ -19,11 +19,12 @@ import string
 import os
 import requests
 from django.db import models
-from .models import Player, Team, TeamMember, Tournament, TournamentParticipant, TournamentMatch, SocialAccount, News
+from django.db.models import Q
+from .models import Player, Team, TeamMember, Tournament, TournamentParticipant, TournamentMatch, SocialAccount, News, TournamentTeam, SquadMember, Squad
 from .serializers import (
-    PlayerSerializer, TeamSerializer, TeamMemberSerializer,
+    PlayerSerializer, TeamSerializer, AllTeamDetailsSerializer, TeamMemberSerializer, SquadSerializer, TournamentTeamSerializer, RegisteredTournamentSerializer,
     TournamentSerializer, TournamentParticipantSerializer, TournamentMatchSerializer,
-    UserRegistrationSerializer, LoginAuthSerializer, NewsSerializer, SignUpAuthSerializer, TournamentDetailSerializer, MatchSerializer
+    UserRegistrationSerializer, LoginAuthSerializer, NewsSerializer, SignUpAuthSerializer, TournamentDetailSerializer, MatchSerializer, SquadMemberSerializer
 )
 from django.db import transaction
 from rest_framework import generics
@@ -35,11 +36,21 @@ class PlayerViewSet(viewsets.ModelViewSet):
     serializer_class = PlayerSerializer
 
     def get_permissions(self):
-        if self.action in ['create']:
+        if self.action == 'create':
             return []
         elif self.action in ['update', 'partial_update', 'destroy']:
             return [IsAdminUser()]
         return [IsAuthenticated()]
+
+    def get_queryset(self):
+        user = self.request.User
+
+        if user.is_superuser:
+            return Player.objects.all()
+
+        return Player.objects.filter(
+            teams__team__lead_player=user
+        ).distinct()
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -47,7 +58,6 @@ class PlayerViewSet(viewsets.ModelViewSet):
         self.perform_create(serializer)
         headers = self.get_success_headers(serializer.data)
         return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
-
 
 class LoginView(APIView):
     def post(self, request):
@@ -362,21 +372,35 @@ class TeamViewSet(viewsets.ModelViewSet):
     queryset = Team.objects.all()
     serializer_class = TeamSerializer
     permission_classes = [IsAuthenticated]
-    
+
+    def get_permissions(self):
+        print("Getting permission")
+        if self.action in ['update', 'partial_update', 'destroy']:
+            return [IsAuthenticated(), IsTeamLead()]
+        return super().get_permissions()
+
     def get_queryset(self):
-        if self.request.user.is_admin:
-            return self.queryset
-        return self.queryset.filter(lead_player=self.request.user)
+        return Team.objects.filter(
+            Q(lead_player=self.request.user) |
+            Q(members__player=self.request.user)
+        ).distinct()
     
     def perform_create(self, serializer):
         if not self.request.user.is_team_lead:
             raise serializers.ValidationError("Only team leads can create teams")
-        
+
         join_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
         while Team.objects.filter(join_code=join_code).exists():
             join_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
-        
-        serializer.save(lead_player=self.request.user, join_code=join_code)
+
+        with transaction.atomic():
+            team = serializer.save(lead_player=self.request.user, join_code=join_code)
+
+            TeamMember.objects.create(
+                team=team,
+                player=self.request.user,
+                role='CAPTAIN'
+            )
     
     @action(detail=True, methods=['post'])
     def join(self, request, pk=None):
@@ -391,13 +415,73 @@ class TeamViewSet(viewsets.ModelViewSet):
         
         TeamMember.objects.create(team=team, player=request.user)
         return Response({'success': 'Joined team successfully'}, status=status.HTTP_200_OK)
-    
-    @action(detail=True, methods=['get'])
+
+    @action(detail=True, methods=['post'])
+    def promote(self, request, pk=None):
+        team = self.get_object()
+        member_id = request.data.get('member_id')
+        member = get_object_or_404(TeamMember, id=member_id, team=team)
+        
+        if member.team != team:
+            return Response(
+                {'detail': 'Member does not belong to this team.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+            
+        member.role = 'CO_LEAD' if member.role == 'MEMBER' else 'CAPTAIN'
+        member.save()
+        return Response(TeamMemberSerializer(member).data)
+
+    @action(detail=True, methods=['get', 'post'])
     def members(self, request, pk=None):
         team = self.get_object()
-        members = TeamMember.objects.filter(team=team)
-        serializer = TeamMemberSerializer(members, many=True)
-        return Response(serializer.data)
+
+        if request.method == 'GET':
+            members = TeamMember.objects.filter(team=team)
+            serializer = TeamMemberSerializer(members, many=True)
+            return Response(serializer.data)
+
+        if team.lead_player != request.user:
+            return Response({'error': 'Only team leads can add members'}, status=status.HTTP_403_FORBIDDEN)
+
+        email = request.data.get('email')
+        role = request.data.get('role', 'MEMBER')
+
+        if not email:
+            return Response({'error': 'Email is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            player = Player.objects.get(email=email)
+        except Player.DoesNotExist:
+            return Response({'error': 'Player with this email does not exist'}, status=status.HTTP_404_NOT_FOUND)
+
+        if TeamMember.objects.filter(team=team, player=player).exists():
+            return Response({'error': 'Player is already a member of this team'}, status=status.HTTP_400_BAD_REQUEST)
+
+        TeamMember.objects.create(team=team, player=player, role=role)
+
+        return Response({'success': 'Player added to team successfully'}, status=status.HTTP_201_CREATED)
+
+
+    @action(detail=True, methods=['delete'], url_path='remove_member')
+    def remove_member(self, request, pk=None):
+        team = self.get_object()
+        member_id = request.data.get('member_id')
+
+        if not member_id:
+            return Response({'error': 'Member ID is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            member = TeamMember.objects.get(id=member_id, team=team)
+        except TeamMember.DoesNotExist:
+            return Response({'error': 'Member not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if member.player == team.lead_player:
+            return Response({'error': 'Cannot remove the team lead'}, status=status.HTTP_400_BAD_REQUEST)
+
+        member.delete()
+        return Response({'success': 'Member removed successfully'}, status=status.HTTP_204_NO_CONTENT)
+
 
 class TeamMemberViewSet(viewsets.ModelViewSet):
     queryset = TeamMember.objects.all()
@@ -422,29 +506,44 @@ class TeamMemberViewSet(viewsets.ModelViewSet):
 class TournamentViewSet(viewsets.ModelViewSet):
     queryset = Tournament.objects.all()
     serializer_class = TournamentSerializer
+    permission_classes = [IsAuthenticated]
     
     def get_permissions(self):
-        if self.action in ['list', 'retrieve']:
+        if self.action in ['list', 'retrieve', 'available', 'register', 'registered']:
             return [IsAuthenticated()]
         return [IsAdminUser()]
     
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        status = self.request.query_params.get('status')
+        if status == 'upcoming':
+            queryset = queryset.filter(start_date__gt=timezone.now(), is_active=True)
+        elif status == 'ongoing':
+            queryset = queryset.filter(start_date__lte=timezone.now(), is_completed=False, is_active=True)
+        elif status == 'completed':
+            queryset = queryset.filter(is_completed=True)
+        
+        return queryset.order_by('start_date')
+
     @action(detail=True, methods=['post'])
     def register(self, request, pk=None):
         tournament = self.get_object()
         team_id = request.data.get('team_id')
-        
         if not team_id:
             return Response({'error': 'team_id is required'}, status=status.HTTP_400_BAD_REQUEST)
         
         try:
             team = Team.objects.get(id=team_id, lead_player=request.user)
         except Team.DoesNotExist:
+            print("Team not found nor lead")
             return Response({'error': 'Team not found or you are not the lead'}, status=status.HTTP_404_NOT_FOUND)
         
         if TournamentParticipant.objects.filter(tournament=tournament, team=team).exists():
+            print("Team already registered")
             return Response({'error': 'Team already registered'}, status=status.HTTP_400_BAD_REQUEST)
         
         if tournament.participants.count() >= tournament.max_players:
+            print("Torna is full")
             return Response({'error': 'Tournament is full'}, status=status.HTTP_400_BAD_REQUEST)
         
         participant = TournamentParticipant.objects.create(tournament=tournament, team=team)
@@ -453,92 +552,176 @@ class TournamentViewSet(viewsets.ModelViewSet):
         
         serializer = TournamentParticipantSerializer(participant)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
-    
+
+    @action(detail=False, methods=['get'])
+    def available(self, request):
+        try:
+            team_member = TeamMember.objects.get(
+                player=request.user,
+                role__in=['CAPTAIN', 'CO_LEAD']
+            )
+            team = team_member.team
+            available_tournaments = Tournament.objects.filter(
+                is_active=True,
+                start_date__gt=timezone.now(),
+                level=team.tier
+            ).exclude(
+                participants__team=team
+            ).order_by('start_date')
+            
+            page = self.paginate_queryset(available_tournaments)
+            if page is not None:
+                serializer = self.get_serializer(page, many=True)
+                return self.get_paginated_response(serializer.data)
+            
+            serializer = self.get_serializer(available_tournaments, many=True)
+            return Response(serializer.data)
+            
+        except TeamMember.DoesNotExist:
+            return Response(
+                {'error': 'You are not a captain or co-lead of any team'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+    @action(detail=False, methods=['get'])
+    def registered(self, request):
+        team_id = request.query_params.get('team_id')
+
+        if not team_id:
+            return Response(
+                {'error': 'team_id is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            team = Team.objects.get(id=team_id)
+
+            if not TeamMember.objects.filter(team=team, player=request.user).exists():
+                return Response(
+                    {'error': 'You are not a member of this team'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+            participants = TournamentParticipant.objects.filter(team=team).select_related('tournament', 'team').order_by('-registered_at')
+
+            page = self.paginate_queryset(participants)
+            serializer = RegisteredTournamentSerializer(page or participants, many=True)
+
+            if page is not None:
+                return self.get_paginated_response(serializer.data)
+            return Response(serializer.data)
+
+        except Team.DoesNotExist:
+            return Response(
+                {'error': 'Team not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+    @action(detail=True, methods=['get'])
+    def participants(self, request, pk=None):
+        tournament = self.get_object()
+        participants = tournament.participants.select_related('team')
+        serializer = TournamentParticipantSerializer(participants, many=True)
+        return Response(serializer.data)
+
     @action(detail=True, methods=['post'])
     def generate_bracket(self, request, pk=None):
         tournament = self.get_object()
         
-        if not request.user.is_admin:
+        if tournament.participants.count() < 2:
             return Response(
-                {'error': 'Only admins can generate brackets'},
-                status=status.HTTP_403_FORBIDDEN
+                {'error': 'Need at least 2 teams to generate bracket'},
+                status=status.HTTP_400_BAD_REQUEST
             )
         
-        participants = list(tournament.participants.all())
-        if not participants:
-            return Response({'error': 'No participants registered'}, status=status.HTTP_400_BAD_REQUEST)
+        bracket = tournament.generate_bracket()
+        tournament.bracket_structure = bracket
+        tournament.is_started = True
+        tournament.save()
         
-        TournamentMatch.objects.filter(tournament=tournament).delete()
+        self._create_initial_matches(tournament, bracket)
         
-        num_teams = len(participants)
-        num_rounds = (num_teams - 1).bit_length()
-        
-        bracket = {}
-        matches = []
-        
-        first_round_teams = participants.copy()
-        random.shuffle(first_round_teams)
-        
-        first_round_matches = []
-        match_num = 1
-        
-        for i in range(0, len(first_round_teams), 2):
-            if i+1 < len(first_round_teams):
-                match = TournamentMatch(
-                    tournament=tournament,
-                    round_number=1,
-                    match_number=match_num,
-                    team1=first_round_teams[i].team,
-                    team2=first_round_teams[i+1].team
-                )
-                matches.append(match)
-                first_round_matches.append(match)
-                match_num += 1
-            else:
-                match = TournamentMatch(
-                    tournament=tournament,
-                    round_number=1,
-                    match_number=match_num,
-                    team1=first_round_teams[i].team,
-                    is_completed=True,
-                    winner=first_round_teams[i].team
-                )
-                matches.append(match)
-                first_round_matches.append(match)
-                match_num += 1
-        
-        current_round_matches = first_round_matches
-        for round_num in range(2, num_rounds + 1):
-            next_round_matches = []
-            match_num = 1
-            
-            for i in range(0, len(current_round_matches), 2):
-                if i+1 < len(current_round_matches):
-                    match = TournamentMatch(
-                        tournament=tournament,
-                        round_number=round_num,
-                        match_number=match_num
-                    )
-                    matches.append(match)
-                    next_round_matches.append(match)
-                    match_num += 1
-                else:
-                    pass
-            
-            current_round_matches = next_round_matches
-        
-        final_match = TournamentMatch(
-            tournament=tournament,
-            round_number=num_rounds + 1,
-            match_number=1
-        )
-        matches.append(final_match)
-        
-        TournamentMatch.objects.bulk_create(matches)
-        
-        return Response({'success': 'Bracket generated successfully'}, status=status.HTTP_200_OK)
+        return Response(bracket)
 
-class TournamentParticipantViewSet(viewsets.ReadOnlyModelViewSet):
+    def _create_initial_matches(self, tournament, bracket):
+        if tournament.bracket_type == 'SINGLE_ELIM':
+            first_round = bracket.get('rounds', [{}])[0]
+            matches = first_round.get('matches', [])
+            
+            for i, match in enumerate(matches, start=1):
+                team1 = match.get('team1', {}).get('id')
+                team2 = match.get('team2', {}).get('id')
+                
+                TournamentMatch.objects.create(
+                    tournament=tournament,
+                    round_number=1,
+                    match_number=i,
+                    team1_id=team1,
+                    team2_id=team2,
+                    scheduled_time=tournament.start_date
+                )
+
+class SquadMemberViewSet(viewsets.ModelViewSet):
+    queryset = SquadMember.objects.all()
+    serializer_class = SquadMemberSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        player = self.request.user
+        squad_id = self.request.query_params.get('squad')
+
+        queryset = SquadMember.objects.filter(
+            squad__participant__team__lead_player=player
+        )
+
+        if squad_id:
+            queryset = queryset.filter(squad_id=squad_id)
+
+        return queryset
+
+    def perform_create(self, serializer):
+        squad_id = self.request.data.get('squad')
+        player_id = self.request.data.get('player')
+
+        current_player = self.request.user
+
+        try:
+            squad = Squad.objects.get(
+                id=squad_id,
+                participant__team__lead_player=current_player
+            )
+
+            TeamMember.objects.get(
+                team=squad.participant.team,
+                player__id=player_id
+            )
+        except (Squad.DoesNotExist, TeamMember.DoesNotExist):
+            raise PermissionDenied("Invalid squad or player not in team.")
+
+        serializer.save(squad=squad)
+
+    def perform_destroy(self, instance):
+        if instance.squad.participant.team.lead_player != self.request.user:
+            raise PermissionDenied("Only team leads can remove squad members.")
+        instance.delete()
+
+
+class AccountTypeUpdateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request):
+        is_team_lead = request.data.get('is_team_lead')
+
+        if is_team_lead is None:
+            return Response({'detail': 'is_team_lead is required'}, status=400)
+
+        user = request.user
+        user.is_team_lead = is_team_lead
+        user.save()
+
+        return Response({'message': 'Account type updated'}, status=200)
+
+class TournamentParticipantViewSet(viewsets.ModelViewSet):
     queryset = TournamentParticipant.objects.all()
     serializer_class = TournamentParticipantSerializer
     permission_classes = [IsAuthenticated]
@@ -547,6 +730,11 @@ class TournamentParticipantViewSet(viewsets.ReadOnlyModelViewSet):
         if self.request.user.is_admin:
             return self.queryset
         return self.queryset.filter(team__lead_player=self.request.user)
+
+    def perform_destroy(self, instance):
+        if instance.team.lead_player != self.request.user and not self.request.user.is_admin:
+            raise PermissionDenied("You cannot delete this participant.")
+        instance.delete()
 
 class TournamentMatchViewSet(viewsets.ModelViewSet):
     queryset = TournamentMatch.objects.all()
@@ -634,6 +822,32 @@ def member_stats(request):
         'last_updated': timezone.now().isoformat()
     })
 
+class SquadViewSet(viewsets.ModelViewSet):
+    queryset = Squad.objects.all()
+    serializer_class = SquadSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return self.queryset.filter(
+            participant__team__lead_player=self.request.user
+        )
+
+    def perform_create(self, serializer):
+        user = self.request.user
+
+        try:
+            team = Team.objects.get(lead_player=user)
+        except Team.DoesNotExist:
+            raise PermissionDenied("You are not a team lead.")
+
+        participant = serializer.validated_data.get('participant')
+        if participant.team != team:
+            raise PermissionDenied("You are not allowed to create a squad for this participant.")
+
+        serializer.save()
+
+
+
 class MemberStatsView(APIView):
     def get(self, request):
         total_members = Player.objects.count()
@@ -687,3 +901,201 @@ class MatchListView(APIView):
 
         serializer = MatchSerializer(matches, many=True)
         return Response(serializer.data)
+
+class JoinTeamView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        join_code = request.data.get('join_code', '').strip().upper()
+        print("join code received")
+        try:
+            team = Team.objects.get(join_code=join_code)
+        except Team.DoesNotExist:
+            print("Invalid join code")
+            return Response({'error': 'Invalid join code'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if TeamMember.objects.filter(team=team, player=request.user).exists():
+            print(request.user)
+            print("Already a member")
+            return Response({'error': 'Already a member of this team'}, status=status.HTTP_400_BAD_REQUEST)
+
+        TeamMember.objects.create(team=team, player=request.user)
+        return Response({'success': 'Joined team successfully'}, status=status.HTTP_200_OK)
+
+class TournamentTeamViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = TournamentTeam.objects.all()
+    serializer_class = TournamentTeamSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return self.queryset.filter(
+            team__lead_player=self.request.user
+        )
+
+@api_view(['POST'])
+def assign_role(request):
+    permission_classes = [IsAuthenticated]
+    user = request.user
+    role = request.data.get('role')
+    lead_role = request.data.get('lead_role')
+
+    try:
+        team_member = TeamMember.objects.select_related('team').get(player=user)
+        team = team_member.team
+
+        squad = Squad.objects.filter(
+            tournament_team__team=team,
+            squad_type=role
+        ).annotate(count=models.Count('members')).order_by('count').first()
+
+        if not squad:
+            return Response({'detail': 'No available squad for this role.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        SquadMember.objects.create(
+            player=user,
+            squad=squad,
+            role='LEADER' if lead_role == 'SQUAD LEAD' else 'NONE',
+            rank='Private',
+            country='Unknown',
+            points=0,
+            kill_death_ratio=0.0,
+            win_rate=0.0
+        )
+
+        if lead_role == 'TEAM CAPTAIN':
+            user.is_team_captain = True
+            user.save(update_fields=['is_team_captain'])
+
+        return Response({'message': 'Role assigned successfully.'}, status=status.HTTP_200_OK)
+
+    except TeamMember.DoesNotExist:
+        return Response({'detail': 'Player is not in a team.'}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        return Response({'detail': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class AllTeamDetailsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        team_id = request.query_params.get('teamId')
+
+        if not team_id:
+            return Response({'error': 'teamId is required'}, status=400)
+
+        try:
+            team = Team.objects.get(id=team_id)
+        except Team.DoesNotExist:
+            raise NotFound("Team not found")
+
+        if team.lead_player != request.user:
+            raise PermissionDenied("You are not authorized to view this team's details")
+
+        squads = Squad.objects.filter(participant__team=team)
+        serialized_data = AllTeamDetailsSerializer(squads, many=True).data
+
+        has_team_captain = team.members.filter(role='CAPTAIN').exists()
+
+        return Response({
+            'team_id': team.id,
+            'team_name': team.name,
+            'has_team_captain': has_team_captain,
+            'squads': serialized_data
+        })
+
+class AssignRolesView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        player = request.user
+
+        data = request.data
+        is_team_captain = data.get('is_team_captain')
+        is_squad_lead = data.get('is_squad_lead')
+        action_role = data.get('action_role')
+
+        if not action_role:
+            return Response({"error": "Action role is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        player.is_team_captain = bool(is_team_captain)
+        player.save()
+
+        squad_members = SquadMember.objects.filter(player=player)
+
+        if not squad_members.exists():
+            try:
+                team_member = TeamMember.objects.get(player=player)
+                team = team_member.team
+
+                participant = TournamentParticipant.objects.filter(team=team).first()
+                if not participant:
+                    return Response({"error": "Team is not registered in any tournament."}, status=status.HTTP_400_BAD_REQUEST)
+
+                existing_squad = Squad.objects.filter(participant=participant).first()
+                if not existing_squad:
+                    used_types = Squad.objects.filter(participant=participant).values_list('squad_type', flat=True)
+                    available_types = [choice[0] for choice in SquadType.choices if choice[0] not in used_types]
+                    if not available_types:
+                        return Response({"error": "No available squad types left to create."}, status=status.HTTP_400_BAD_REQUEST)
+
+                    existing_squad = Squad.objects.create(participant=participant, squad_type=available_types[0])
+
+                squad_member = SquadMember.objects.create(
+                    player=player,
+                    squad=existing_squad,
+                    role='NONE',
+                    action_role=action_role.upper(),
+                    rank='Private',
+                    country='Unknown',
+                    points=0,
+                    kill_death_ratio=0.0,
+                    win_rate=0.0
+                )
+                squad_members = [squad_member]
+
+            except TeamMember.DoesNotExist:
+                return Response({"error": "Player is not in any team."}, status=status.HTTP_400_BAD_REQUEST)
+
+        for squad_member in squad_members:
+            if is_squad_lead:
+                SquadMember.objects.filter(
+                    squad=squad_member.squad, role='LEADER'
+                ).exclude(player=player).update(role='NONE')
+                squad_member.role = 'LEADER'
+
+            elif is_team_captain:
+                SquadMember.objects.filter(
+                    squad=squad_member.squad, role='CAPTAIN'
+                ).exclude(player=player).update(role='NONE')
+                squad_member.role = 'CAPTAIN'
+
+            else:
+                squad_member.role = 'NONE'
+
+            squad_member.action_role = action_role.upper()
+            squad_member.save()
+
+        return Response({"message": "Roles successfully updated."})
+
+class UserSquadStatusView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        team_id = request.query_params.get('team_id')
+        if not team_id:
+            return Response({"error": "team_id is required"}, status=400)
+
+        try:
+            team = Team.objects.get(id=team_id)
+        except Team.DoesNotExist:
+            return Response({"error": "Team not found"}, status=404)
+
+        player = request.user
+
+        participants = TournamentParticipant.objects.filter(team=team)
+
+        squads = Squad.objects.filter(participant__in=participants)
+
+        in_squad = SquadMember.objects.filter(squad__in=squads, player=player).exists()
+
+        return Response({"in_squad": in_squad})

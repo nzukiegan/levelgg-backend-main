@@ -16,7 +16,7 @@ from tournaments.models import (
 
 fake = Faker()
 
-print("Clearing existing data...")
+print("🧹 Clearing existing data...")
 SquadMember.objects.all().delete()
 Squad.objects.all().delete()
 TournamentTeam.objects.all().delete()
@@ -28,7 +28,7 @@ Team.objects.all().delete()
 Player.objects.all().delete()
 News.objects.all().delete()
 
-print("Creating players...")
+print("👤 Creating players...")
 players = []
 for _ in range(50):
     player = Player.objects.create(
@@ -36,6 +36,7 @@ for _ in range(50):
         email=fake.unique.email(),
         password=make_password('password123'),
         is_team_lead=random.choice([True, False]),
+        tier=random.choice([choice[0] for choice in Player.TIER_CHOICES])
     )
     players.append(player)
 
@@ -45,25 +46,31 @@ def generate_unique_join_code():
         if not Team.objects.filter(join_code=code).exists():
             return code
 
-print("Creating teams...")
+print("🤝 Creating teams and assigning members...")
 teams = []
 for i in range(4):
     lead = random.choice(players)
     team = Team.objects.create(
-        name = random.choice(["Red Devils", "Squad 34", "Vixens", "5 Star Parlays", "OnlyTheOnes", "Faded", "Destined XS", "Carolina Jays", "Xarmy", "TakeHomeWinners", "OutNout", "MIL 42s"]),
+        name=random.choice([
+            "Red Devils", "Squad 34", "Vixens", "5 Star Parlays", "OnlyTheOnes", 
+            "Faded", "Destined XS", "Carolina Jays", "Xarmy", 
+            "TakeHomeWinners", "OutNout", "MIL 42s"
+        ]),
         lead_player=lead,
-        join_code=generate_unique_join_code()
+        join_code=generate_unique_join_code(),
+        tier=lead.tier
     )
     teams.append(team)
-    TeamMember.objects.create(team=team, player=lead)
+    TeamMember.objects.create(team=team, player=lead, role='CAPTAIN')
 
-    members = set([lead])
+    members = {lead}
     while len(members) < 5:
         p = random.choice(players)
         if p not in members:
-            TeamMember.objects.create(team=team, player=p)
+            TeamMember.objects.create(team=team, player=p, role=random.choice(['MEMBER', 'CO_LEAD']))
             members.add(p)
 
+print("🎮 Creating tournaments...")
 tournaments = []
 base_date = timezone.now() + timezone.timedelta(days=1)
 
@@ -74,11 +81,11 @@ for i in range(20):
         game=random.choice(["BATTLEFIELD", "NHL"]),
         title=random.choice(["US NORTH INVITATIONALS", "US NORTH GRAND", "EUROPE LEVEL FINALS"]),
         max_players=64,
-        registered_players=random.choice([16, 32, 48]),
-        mode="TEAM",
-        region=random.choice(["US NORTH", "EUROPE"]),
-        level=random.choice(["BEGINNER", "INTERMEDIATE", "ADVANCED"]),
-        platform=random.choice(["PC", "Console"]),
+        registered_players=0,
+        mode=random.choice(["16v16", "32v32", "64v64"]),
+        region=random.choice(["NA", "EU"]),
+        level=random.choice(["BRONZE", "SILVER", "GOLD"]),
+        platform=random.choice(["PC", "CONSOLE"]),
         start_date=start_date,
         language="English",
         tournament_type=random.choice(["Elimination", "Round Robin"]),
@@ -89,21 +96,25 @@ for i in range(20):
 
 tournament = tournaments[0]
 
-print("Registering RED and BLUE teams...")
+print("📥 Registering 2 teams to tournament with RED/BLUE color and participants...")
 colors = ['RED', 'BLUE']
 for i in range(2):
     team = teams[i]
-    tournament_team = TournamentTeam.objects.create(
+    participant = TournamentParticipant.objects.create(team=team, tournament=tournament)
+    
+    TournamentTeam.objects.create(
         tournament=tournament,
         team=team,
         color=colors[i]
     )
-    TournamentParticipant.objects.create(team=team, tournament=tournament)
 
-    print(f"Creating squads for {team.name} ({colors[i]})...")
-    for squad_type in ['INFANTRY', 'ARMOR', 'HELI', 'JET']:
+    tournament.registered_players += 1
+    tournament.save()
+
+    print(f"🪖 Creating squads for {team.name} ({colors[i]})...")
+    for squad_type in ['ALPHA', 'BRAVO', 'CHARLIE']:
         squad = Squad.objects.create(
-            tournament_team=tournament_team,
+            participant=participant,
             squad_type=squad_type
         )
 
@@ -115,18 +126,17 @@ for i in range(2):
                 squad=squad,
                 role=roles[j],
                 rank=random.choice(["Sergeant", "Corporal", "Lieutenant", "Major"]),
-                country=fake.country_code().lower(),
+                country=fake.country_code().upper(),
                 points=random.randint(100, 1000),
                 kill_death_ratio=round(random.uniform(0.5, 3.5), 2),
                 win_rate=round(random.uniform(40, 100), 2)
             )
 
-
-print("Creating multiple tournament matches with scores and mode...")
+print("🎯 Creating matches between 2 teams in tournament...")
 team1 = teams[0]
 team2 = teams[1]
 
-for i in range(10):
+for i in range(3):
     team1_score = random.randint(0, 20)
     team2_score = random.randint(0, 20)
     winner_team = team1 if team1_score >= team2_score else team2
@@ -140,11 +150,11 @@ for i in range(10):
         team1_score=team1_score,
         team2_score=team2_score,
         winner=winner_team,
-        mode=random.choice(["CONQUEST", "DOMINATION", "FLAG CUPTURE"]),
+        mode=random.choice(["CONQUEST", "DOMINATION", "FLAG CAPTURE"]),
         scheduled_time=tournament.start_date
     )
 
-print("Creating news...")
+print("📰 Creating news...")
 for _ in range(10):
     News.objects.create(
         title=fake.catch_phrase(),
@@ -153,4 +163,4 @@ for _ in range(10):
         more_link=fake.url()
     )
 
-print("✅ DONE: Database populated successfully!")
+print("✅ DONE: Database seeded with demo data.")

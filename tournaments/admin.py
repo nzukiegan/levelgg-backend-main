@@ -59,17 +59,17 @@ class SquadAdmin(admin.ModelAdmin):
     list_display = ('get_tournament', 'get_team', 'squad_type')
     list_filter = ('squad_type',)
     search_fields = (
-        'tournament_team__tournament__title',
-        'tournament_team__team__name'
+        'participant__tournament__title',
+        'participant__team__name',
     )
-    raw_id_fields = ('tournament_team',)
+    raw_id_fields = ('participant',)
 
     def get_tournament(self, obj):
-        return obj.tournament_team.tournament.title
+        return obj.participant.tournament.title
     get_tournament.short_description = 'Tournament'
 
     def get_team(self, obj):
-        return obj.tournament_team.team.name
+        return obj.participant.team.name
     get_team.short_description = 'Team'
 
 @admin.register(SquadMember)
