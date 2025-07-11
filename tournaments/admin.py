@@ -3,7 +3,7 @@ from .models import Player, Team, TeamMember, SocialAccount, Tournament, Tournam
 
 @admin.register(Player)
 class PlayerAdmin(admin.ModelAdmin):
-    list_display = ('email', 'username', 'is_team_lead', 'is_admin', 'date_joined')
+    list_display = ('email', 'username', 'is_team_lead', 'is_admin', 'date_joined', 'country_code', 'points', 'kill_death_ratio', 'win_rate')
     list_filter = ('is_team_lead', 'is_admin')
     search_fields = ('email', 'username')
     ordering = ('-date_joined',)
@@ -75,12 +75,10 @@ class SquadAdmin(admin.ModelAdmin):
 @admin.register(SquadMember)
 class SquadMemberAdmin(admin.ModelAdmin):
     list_display = (
-        'player', 'squad', 'role',
-        'rank', 'country', 'points',
-        'kill_death_ratio', 'win_rate'
+        'player', 'squad', 'role'
     )
-    list_filter = ('role', 'country')
-    search_fields = ('player__email', 'player__username', 'rank', 'country')
+    list_filter = ('role', 'player')
+    search_fields = ('player__email', 'player__username')
     raw_id_fields = ('player', 'squad')
 
 @admin.register(SocialAccount)

@@ -176,11 +176,11 @@ class SquadMemberSerializer(serializers.ModelSerializer):
     player_email = serializers.CharField(source='player.email', read_only=True)
     is_online = serializers.BooleanField(source='player.is_online', read_only=True)
     
-    rank = serializers.CharField(read_only=True)
-    country = serializers.CharField(read_only=True)
-    points = serializers.IntegerField(read_only=True)
-    kd = serializers.FloatField(source='kill_death_ratio', read_only=True)
-    winrate = serializers.FloatField(source='win_rate', read_only=True)
+    rank = serializers.CharField(source='player.rank', read_only=True)
+    country = serializers.CharField(source='player.country_code', read_only=True)
+    points = serializers.IntegerField(source='player.points', read_only=True)
+    kd = serializers.FloatField(source='player.kill_death_ratio', read_only=True)
+    winrate = serializers.FloatField(source='player.win_rate', read_only=True)
     role = serializers.CharField(read_only=True)
     action_role = serializers.CharField(read_only=True)
 
@@ -200,15 +200,13 @@ class SquadMemberSerializer(serializers.ModelSerializer):
         return f"/players/{obj.player.username.lower()}.png" if obj.player.username else "/players/default.png"
 
     def get_country_icon(self, obj):
-        if obj.country:
-            country_code = obj.country.lower()
-            return f"/flags/{country_code}.png"
-        return None
+        return f"/flags/{obj.player.country_code}.png"
 
 
 class SquadSerializer(serializers.ModelSerializer):
     members = SquadMemberSerializer(many=True, read_only=True)
     icon = serializers.SerializerMethodField()
+    tournament_id = serializers.SerializerMethodField()
     tournament_name = serializers.SerializerMethodField()
     team_name = serializers.SerializerMethodField()
 
@@ -216,7 +214,7 @@ class SquadSerializer(serializers.ModelSerializer):
         model = Squad
         fields = [
             'id', 'squad_type', 'members', 'participant',
-            'tournament_name', 'team_name', 'icon'
+            'tournament_id', 'tournament_name', 'team_name', 'icon'
         ]
     
     def get_icon(self, obj):
@@ -227,6 +225,9 @@ class SquadSerializer(serializers.ModelSerializer):
             'JET': '/jet.png',
         }
         return icon_map.get(obj.squad_type, '/icons/default.png')
+
+    def get_tournament_id(self, obj):
+        return obj.participant.tournament.id if obj.participant and obj.participant.tournament else None
 
     def get_tournament_name(self, obj):
         return obj.participant.tournament.title if obj.participant and obj.participant.tournament else None

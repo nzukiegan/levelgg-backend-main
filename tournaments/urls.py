@@ -2,7 +2,7 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import (
     PlayerViewSet, TeamViewSet, TeamMemberViewSet, SquadViewSet, SquadMemberViewSet, TournamentTeamViewSet, AllTeamDetailsView, UserSquadStatusView,
-    TournamentViewSet, AssignRolesView, TournamentParticipantViewSet, TeamViewSet, TournamentMatchViewSet, AccountTypeUpdateView, JoinTeamView, member_stats, assign_role, LoginView, TournamentListView, RegistrationView, SocialSignupView, SocialCallbackView, SocialLoginView, NewsListView, UpcomingTournamentView, MatchListView
+    TournamentViewSet, AssignRolesView, TournamentParticipantViewSet, CountryCodeUpdateView, TeamViewSet, TournamentMatchViewSet, AccountTypeUpdateView, JoinTeamView, member_stats, LoginView, TournamentListView, RegistrationView, SocialSignupView, SocialCallbackView, SocialLoginView, NewsListView, UpcomingTournamentView, MatchListView
 )
 
 router = DefaultRouter()
@@ -29,8 +29,8 @@ urlpatterns = [
     path('news/', NewsListView.as_view(), name='news-list'),
     path('team/join/', JoinTeamView.as_view(), name='join-team'),
     path('player/account-type/', AccountTypeUpdateView.as_view(), name='account-type-update'),
+    path('player/country-code/', CountryCodeUpdateView.as_view(), name='country-code-update'),
     path('allteamdetails/', AllTeamDetailsView.as_view(), name='all_team_details'),
     path('assign-roles/', AssignRolesView.as_view(), name='assign-roles'),
     path('user-squad-status/', UserSquadStatusView.as_view(), name='user-squad-status'),
-
 ]

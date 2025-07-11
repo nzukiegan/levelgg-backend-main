@@ -34,6 +34,7 @@ User = get_user_model()
 class PlayerViewSet(viewsets.ModelViewSet):
     queryset = Player.objects.all()
     serializer_class = PlayerSerializer
+    permission_classes = [IsAuthenticated]
 
     def get_permissions(self):
         if self.action == 'create':
@@ -43,7 +44,7 @@ class PlayerViewSet(viewsets.ModelViewSet):
         return [IsAuthenticated()]
 
     def get_queryset(self):
-        user = self.request.User
+        user = self.request.user
 
         if user.is_superuser:
             return Player.objects.all()
@@ -58,6 +59,19 @@ class PlayerViewSet(viewsets.ModelViewSet):
         self.perform_create(serializer)
         headers = self.get_success_headers(serializer.data)
         return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+
+    @action(detail=False, methods=['patch'], permission_classes=[IsAuthenticated])
+    def account_type(self, request):
+        print("IS AUTHENTICATED:", request.user.is_authenticated)
+        player = request.user
+        is_team_lead = request.data.get('is_team_lead')
+
+        if is_team_lead is None:
+            return Response({'error': 'is_team_lead is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        player.is_team_lead = is_team_lead
+        player.save()
+        return Response({'message': 'Account type updated successfully'})
 
 class LoginView(APIView):
     def post(self, request):
@@ -158,7 +172,7 @@ class SocialLoginView(APIView):
         params = {
             'client_id': facebook_app['client_id'],
             'client_secret': facebook_app['secret'],
-            'redirect_uri': 'http://localhost:3000/login_callback?provider=facebook',  # or set via .env
+            'redirect_uri': 'http://localhost:3000/login_callback?provider=facebook',
             'code': code
         }
 
@@ -683,6 +697,7 @@ class SquadMemberViewSet(viewsets.ModelViewSet):
         squad_id = self.request.data.get('squad')
         player_id = self.request.data.get('player')
 
+
         current_player = self.request.user
 
         try:
@@ -691,14 +706,14 @@ class SquadMemberViewSet(viewsets.ModelViewSet):
                 participant__team__lead_player=current_player
             )
 
-            TeamMember.objects.get(
+            player = TeamMember.objects.get(
                 team=squad.participant.team,
                 player__id=player_id
-            )
+            ).player
         except (Squad.DoesNotExist, TeamMember.DoesNotExist):
             raise PermissionDenied("Invalid squad or player not in team.")
 
-        serializer.save(squad=squad)
+        serializer.save(squad=squad, player=player)
 
     def perform_destroy(self, instance):
         if instance.squad.participant.team.lead_player != self.request.user:
@@ -720,6 +735,19 @@ class AccountTypeUpdateView(APIView):
         user.save()
 
         return Response({'message': 'Account type updated'}, status=200)
+
+
+class CountryCodeUpdateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request):
+        country_code = request.data.get('country_code')
+
+        user = request.user
+        user.country_code = country_code
+        user.save()
+
+        return Response({'message': 'Country code updated'}, status=200)
 
 class TournamentParticipantViewSet(viewsets.ModelViewSet):
     queryset = TournamentParticipant.objects.all()
@@ -932,47 +960,6 @@ class TournamentTeamViewSet(viewsets.ReadOnlyModelViewSet):
             team__lead_player=self.request.user
         )
 
-@api_view(['POST'])
-def assign_role(request):
-    permission_classes = [IsAuthenticated]
-    user = request.user
-    role = request.data.get('role')
-    lead_role = request.data.get('lead_role')
-
-    try:
-        team_member = TeamMember.objects.select_related('team').get(player=user)
-        team = team_member.team
-
-        squad = Squad.objects.filter(
-            tournament_team__team=team,
-            squad_type=role
-        ).annotate(count=models.Count('members')).order_by('count').first()
-
-        if not squad:
-            return Response({'detail': 'No available squad for this role.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        SquadMember.objects.create(
-            player=user,
-            squad=squad,
-            role='LEADER' if lead_role == 'SQUAD LEAD' else 'NONE',
-            rank='Private',
-            country='Unknown',
-            points=0,
-            kill_death_ratio=0.0,
-            win_rate=0.0
-        )
-
-        if lead_role == 'TEAM CAPTAIN':
-            user.is_team_captain = True
-            user.save(update_fields=['is_team_captain'])
-
-        return Response({'message': 'Role assigned successfully.'}, status=status.HTTP_200_OK)
-
-    except TeamMember.DoesNotExist:
-        return Response({'detail': 'Player is not in a team.'}, status=status.HTTP_400_BAD_REQUEST)
-    except Exception as e:
-        return Response({'detail': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
 
 class AllTeamDetailsView(APIView):
     permission_classes = [IsAuthenticated]
@@ -1015,6 +1002,7 @@ class AssignRolesView(APIView):
         action_role = data.get('action_role')
 
         if not action_role:
+            print("error Action role is required.")
             return Response({"error": "Action role is required."}, status=status.HTTP_400_BAD_REQUEST)
 
         player.is_team_captain = bool(is_team_captain)
@@ -1044,12 +1032,7 @@ class AssignRolesView(APIView):
                     player=player,
                     squad=existing_squad,
                     role='NONE',
-                    action_role=action_role.upper(),
-                    rank='Private',
-                    country='Unknown',
-                    points=0,
-                    kill_death_ratio=0.0,
-                    win_rate=0.0
+                    action_role=action_role.upper()
                 )
                 squad_members = [squad_member]
 

@@ -11,6 +11,20 @@ class Player(AbstractUser):
         ('PLATINUM', 'Platinum'),
         ('DIAMOND', 'Diamond'),
     ]
+    RANK_CHOICES = [
+        ('RECRUIT', 'Recruit'),
+        ('PRIVATE', 'Private'),
+        ('CORPORAL', 'Corporal'),
+        ('SERGEANT', 'Sergeant'),
+        ('STAFF_SERGEANT', 'Staff Sergeant'),
+        ('SERGEANT_MAJOR', 'Sergeant Major'),
+        ('LIEUTENANT', 'Lieutenant'),
+        ('CAPTAIN', 'Captain'),
+        ('MAJOR', 'Major'),
+        ('COLONEL', 'Colonel'),
+        ('GENERAL', 'General'),
+    ]
+
     is_team_lead = models.BooleanField(default=False)
     is_team_captain = models.BooleanField(default=False)
     is_admin = models.BooleanField(default=False)
@@ -23,6 +37,12 @@ class Player(AbstractUser):
     skill_rating = models.IntegerField(default=1000)
     preferred_roles = models.JSONField(default=list)
     discord_id = models.CharField(max_length=100, blank=True, null=True)
+
+    country_code = models.CharField(max_length=2, blank=True, null=True)
+    points = models.IntegerField(default=0)
+    kill_death_ratio = models.FloatField(default=0.0)
+    win_rate = models.FloatField(default=0.0) 
+    rank = models.CharField(max_length=30, choices=RANK_CHOICES, default='Private')
 
     class Meta:
         db_table = 'tournaments_player'
@@ -303,7 +323,8 @@ class Squad(models.Model):
     participant = models.ForeignKey(
         'TournamentParticipant',
         on_delete=models.CASCADE,
-        related_name='squads'
+        related_name='squads',
+        null=True,
     )
     squad_type = models.CharField(
         max_length=15,
@@ -336,11 +357,6 @@ class SquadMember(models.Model):
     squad = models.ForeignKey(Squad, on_delete=models.CASCADE, related_name='members')
     role = models.CharField(max_length=10, choices=ROLE_CHOICES, default='NONE')
     action_role = models.CharField(max_length=10, choices=ACTION_ROLE_CHOICES, default='INFANTRY')
-    rank = models.CharField(max_length=100)
-    country = models.CharField(max_length=100)
-    points = models.IntegerField(default=0)
-    kill_death_ratio = models.FloatField(default=0.0)
-    win_rate = models.FloatField(default=0.0)
 
     class Meta:
         constraints = [

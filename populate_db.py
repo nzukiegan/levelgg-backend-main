@@ -11,12 +11,13 @@ django.setup()
 
 from tournaments.models import (
     Player, Team, TeamMember, Tournament, TournamentParticipant, TournamentMatch,
-    TournamentTeam, Squad, SquadMember, News
+    TournamentTeam, Squad, SquadMember, News,
+    TeamColor, SquadType
 )
 
 fake = Faker()
 
-print("🧹 Clearing existing data...")
+print("Clearing existing data...")
 SquadMember.objects.all().delete()
 Squad.objects.all().delete()
 TournamentTeam.objects.all().delete()
@@ -28,17 +29,19 @@ Team.objects.all().delete()
 Player.objects.all().delete()
 News.objects.all().delete()
 
-print("👤 Creating players...")
+print("Creating players...")
 players = []
 for _ in range(50):
-    player = Player.objects.create(
+    players.append(Player.objects.create(
         username=fake.user_name(),
         email=fake.unique.email(),
         password=make_password('password123'),
         is_team_lead=random.choice([True, False]),
-        tier=random.choice([choice[0] for choice in Player.TIER_CHOICES])
-    )
-    players.append(player)
+        country_code=fake.country_code().lower(),
+        points=random.randint(100, 1000),
+        kill_death_ratio=round(random.uniform(0.5, 3.5), 2),
+        win_rate=round(random.uniform(40, 100), 2)
+    ))
 
 def generate_unique_join_code():
     while True:
@@ -46,46 +49,47 @@ def generate_unique_join_code():
         if not Team.objects.filter(join_code=code).exists():
             return code
 
-print("🤝 Creating teams and assigning members...")
+print("Creating teams...")
 teams = []
-for i in range(4):
-    lead = random.choice(players)
+team_leads = [p for p in players if p.is_team_lead]
+random.shuffle(team_leads)
+team_names = [
+    "Red Devils", "Squad 34", "Vixens", "5 Star Parlays", "OnlyTheOnes", "Faded",
+    "Destined XS", "Carolina Jays", "Xarmy", "TakeHomeWinners", "OutNout", "MIL 42s"
+]
+
+for i in range(min(4, len(team_leads))):
+    lead = team_leads[i]
     team = Team.objects.create(
-        name=random.choice([
-            "Red Devils", "Squad 34", "Vixens", "5 Star Parlays", "OnlyTheOnes", 
-            "Faded", "Destined XS", "Carolina Jays", "Xarmy", 
-            "TakeHomeWinners", "OutNout", "MIL 42s"
-        ]),
+        name=random.choice(team_names),
         lead_player=lead,
-        join_code=generate_unique_join_code(),
-        tier=lead.tier
+        join_code=generate_unique_join_code()
     )
     teams.append(team)
-    TeamMember.objects.create(team=team, player=lead, role='CAPTAIN')
+    TeamMember.objects.create(team=team, player=lead)
 
     members = {lead}
     while len(members) < 5:
         p = random.choice(players)
         if p not in members:
-            TeamMember.objects.create(team=team, player=p, role=random.choice(['MEMBER', 'CO_LEAD']))
+            TeamMember.objects.create(team=team, player=p)
             members.add(p)
 
-print("🎮 Creating tournaments...")
+print("Creating tournaments...")
 tournaments = []
 base_date = timezone.now() + timezone.timedelta(days=1)
 
 for i in range(20):
     start_date = base_date + timezone.timedelta(days=i * 2)
-
     t = Tournament.objects.create(
-        game=random.choice(["BATTLEFIELD", "NHL"]),
+        game=random.choice([choice[0] for choice in Tournament.GAME_CHOICES]),
         title=random.choice(["US NORTH INVITATIONALS", "US NORTH GRAND", "EUROPE LEVEL FINALS"]),
         max_players=64,
-        registered_players=0,
+        registered_players=random.choice([16, 32, 48]),
         mode=random.choice(["16v16", "32v32", "64v64"]),
-        region=random.choice(["NA", "EU"]),
-        level=random.choice(["BRONZE", "SILVER", "GOLD"]),
-        platform=random.choice(["PC", "CONSOLE"]),
+        region=random.choice([choice[0] for choice in Tournament.REGION_CHOICES]),
+        level="BRONZE",
+        platform=random.choice([choice[0] for choice in Tournament.PLATFORM_CHOICES]),
         start_date=start_date,
         language="English",
         tournament_type=random.choice(["Elimination", "Round Robin"]),
@@ -95,51 +99,49 @@ for i in range(20):
     tournaments.append(t)
 
 tournament = tournaments[0]
+print("Registering teams to tournament...")
 
-print("📥 Registering 2 teams to tournament with RED/BLUE color and participants...")
-colors = ['RED', 'BLUE']
-for i in range(2):
+for i, color in enumerate(TeamColor):
+    if i >= len(teams):
+        break
+
     team = teams[i]
-    participant = TournamentParticipant.objects.create(team=team, tournament=tournament)
-    
-    TournamentTeam.objects.create(
+    tournament_team = TournamentTeam.objects.create(
         tournament=tournament,
         team=team,
-        color=colors[i]
+        color=color
     )
 
-    tournament.registered_players += 1
-    tournament.save()
+    participant = TournamentParticipant.objects.create(
+        team=team,
+        tournament=tournament
+    )
 
-    print(f"🪖 Creating squads for {team.name} ({colors[i]})...")
-    for squad_type in ['ALPHA', 'BRAVO', 'CHARLIE']:
+    print(f"Creating squads for {team.name} ({color})...")
+
+    for squad_type in SquadType.choices:
         squad = Squad.objects.create(
             participant=participant,
-            squad_type=squad_type
+            squad_type=squad_type[0]
         )
 
         squad_members = random.sample(list(TeamMember.objects.filter(team=team)), 3)
         roles = ['CAPTAIN', 'LEADER', 'NONE']
+
         for j, tm in enumerate(squad_members):
             SquadMember.objects.create(
                 player=tm.player,
                 squad=squad,
-                role=roles[j],
-                rank=random.choice(["Sergeant", "Corporal", "Lieutenant", "Major"]),
-                country=fake.country_code().upper(),
-                points=random.randint(100, 1000),
-                kill_death_ratio=round(random.uniform(0.5, 3.5), 2),
-                win_rate=round(random.uniform(40, 100), 2)
+                role=roles[j]
             )
 
-print("🎯 Creating matches between 2 teams in tournament...")
-team1 = teams[0]
-team2 = teams[1]
+print("Creating matches...")
+team1, team2 = teams[0], teams[1]
 
-for i in range(3):
-    team1_score = random.randint(0, 20)
-    team2_score = random.randint(0, 20)
-    winner_team = team1 if team1_score >= team2_score else team2
+for i in range(10):
+    score1 = random.randint(0, 20)
+    score2 = random.randint(0, 20)
+    winner = team1 if score1 >= score2 else team2
 
     TournamentMatch.objects.create(
         tournament=tournament,
@@ -147,14 +149,14 @@ for i in range(3):
         match_number=i + 1,
         team1=team1,
         team2=team2,
-        team1_score=team1_score,
-        team2_score=team2_score,
-        winner=winner_team,
-        mode=random.choice(["CONQUEST", "DOMINATION", "FLAG CAPTURE"]),
+        team1_score=score1,
+        team2_score=score2,
+        winner=winner,
+        mode="TEAM",
         scheduled_time=tournament.start_date
     )
 
-print("📰 Creating news...")
+print("Creating news articles...")
 for _ in range(10):
     News.objects.create(
         title=fake.catch_phrase(),
@@ -163,4 +165,4 @@ for _ in range(10):
         more_link=fake.url()
     )
 
-print("✅ DONE: Database seeded with demo data.")
+print("✅ DONE: Database populated successfully!")

@@ -11,7 +11,7 @@ SECRET_KEY = 'django-insecure-da)pj4k5!ih3n8g52exap281$^l+1w6u42ysvxi0bu5pul_nuv
 
 DEBUG = True
 
-ALLOWED_HOSTS = [os.environ.get('BACKEND_URL'), os.environ.get('CLIENT_URL'), 'localhost', '127.0.0.1',]
+ALLOWED_HOSTS = [os.environ.get('BACKEND_URL'), os.environ.get('BACKEND_URL2'), os.environ.get('CLIENT_URL'), 'localhost', '127.0.0.1']
 
 AUTH_USER_MODEL = 'tournaments.Player'
 
@@ -139,11 +139,17 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 CORS_ALLOWED_ORIGINS = [
     os.environ.get('CLIENT_URL'),
+    os.environ.get('BACKEND_URL2'),
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
 ]
 
 CORS_ALLOW_CREDENTIALS = True
 
 REST_FRAMEWORK = {
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.AllowAny',
+    ],
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ],
