@@ -136,13 +136,14 @@ class SocialLoginView(APIView):
 
     def get_discord_access_token(self, code):
         discord_app = settings.SOCIALACCOUNT_PROVIDERS['discord']['APP']
+        redirect_uri = os.environ.get("CLIENT_URL", "http://localhost:3000") + "/login_callback?provider=discord"
         
         data = {
             'client_id': discord_app['client_id'],
             'client_secret': discord_app['secret'],
             'grant_type': 'authorization_code',
             'code': code,
-            'redirect_uri': 'http://localhost:3000/login_callback?provider=discord',
+            'redirect_uri': redirect_uri,
         }
 
         headers = {'Content-Type': 'application/x-www-form-urlencoded'}
